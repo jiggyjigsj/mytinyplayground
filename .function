@@ -1,0 +1,143 @@
+# Git related alias and thing
+# Update upstream repo
+if [[ -z $current ]]; then
+  current=$(pwd)
+fi
+if [[ -z $username ]]; then
+  username=$(whoami)
+fi
+
+# Function to list all avaliable functions
+function listfunction {
+echo "##############################"
+echo "#    Avaliable functions:    #"
+echo "##############################"
+echo "# 1.) gitupdate - Update fork repo"
+echo "# 2.) changeorg - Change chef orgs"
+echo "# 3.) gitstash  - Drop unwanted files"
+echo "##############################"
+}
+
+# Update forked repo
+function gitupdate {
+  local check
+  local repo
+  local branch_name
+
+  branch_name=$(git symbolic-ref -q HEAD)
+  branch_name=${branch_name##refs/heads/}
+  branch_name=${branch_name:-HEAD}
+
+  git status > /dev/null 2>&1
+  if [[ $? != 0 ]]; then
+    echo "Not a git repo!"
+    return
+  else
+    check=$(git remote)
+    if [[ $check != *"upstream"* ]]; then
+      echo 'Missing upstream, Whats thy OG-Repo: '
+      read repo
+      if [[ -z "$repo" ]] || [[ "$repo" != *".git" ]]; then
+        echo "Invalid repo provided."
+        return 0
+      else
+        git remote add upstream $repo
+        if [[ $? != 0 ]]; then
+          echo "Failed to add upstream repo.  Try again."
+          return 0
+        fi
+      fi
+    fi
+    git checkout master
+    git fetch upstream
+    git rebase upstream/master
+    git push
+    git checkout $branch_name
+  fi
+}
+
+# Function to change orgs.
+function changeorg {
+  local org
+  local chef
+  local check1
+  local check2
+  chef="$HOME/.chef"
+  org=$1
+  if [[ -z $org ]]; then
+    echo "You missing and ORG Fool"
+    echo "To list all Orgs try: changeorg -l"
+    return 0
+  fi
+
+  restofcomand="grep -v jp053505.pem | grep -v knife.rb | grep -v syntaxcache"
+  restofcomand="${restofcomand} | grep -v cookbooks | grep -v data_bags"
+  if [[ $org == "-l" ]]; then
+    ls $chef | ${restofcomand}
+    return 0
+  fi
+
+  chefdir="$chef/$org"
+  if [ -f "$chefdir/jp053505.pem" ] && [ -f "$chefdir/knife.rb" ]; then
+    cp $chefdir/jp053505.pem $chef
+    check1=$?
+    cp $chefdir/knife.rb $chef
+    check2=$?
+    if [[ $check1 == 0 ]] && [[ $check2 == 0 ]]; then
+      echo "ORG Changed to $org"
+    else
+      echo "Failed to change ORG $org"
+    fi
+  else
+    echo "Fool you never configured the ORG!"
+  fi
+}
+
+# Function to stash and drop changes i dont want
+function gitstash {
+  local result
+  git status > /dev/null 2>&1
+  if [[ $? != 0 ]]; then
+    echo "Not a git repo! You fool!"
+    return
+  else
+    git add .
+    git stash
+    result=$(git stash drop)
+    if [[ $? == 0 ]]; then
+      echo "Drop Succesfull"
+      echo ${result}
+    else
+      echo "Drop Failed"
+      echo "Error: ${result}"
+    fi
+  fi
+}
+
+# Fetch the latest Repo
+# Get the latest gps-vault
+tim=2
+if [[ -d ${HOME}/.keys/gps-vault ]]; then
+  cd ${HOME}/.keys/gps-vault || return
+  timelimit -S $tim -s $tim -t $tim -T $tim git pull > /dev/null 2>&1
+fi
+
+# Get the latest mapping
+if [[ -d ${HOME}/repo/appliance_mapping ]]; then
+  cd ${HOME}/repo/appliance_mapping || return
+  timelimit -S $tim -s $tim -t $tim -T $tim git pull > /dev/null 2>&1
+fi
+
+# Backup files:
+date=$(date)
+if [[ -d ~/repo/personal-repos/playground/ ]]; then
+  cd ~/repo/personal-repos/playground/
+  cp ~/.zshrc ~/repo/personal-repos/playground/
+  cp ~/.function ~/repo/personal-repos/playground/
+  cp -r ~/.chef ~/repo/personal-repos/playground/
+  git add .zshrc .function .chef > /dev/null 2>&1
+  git commit -m "Updating files $date" > /dev/null 2>&1
+  timelimit -S $tim -s $tim -t $tim -T $tim git push > /dev/null 2>&1
+fi
+
+cd $current || return
