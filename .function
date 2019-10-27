@@ -1,3 +1,4 @@
+# shellcheck disable=SC2148
 # Git related alias and thing
 # Update upstream repo
 if [[ -z $current ]]; then
@@ -14,8 +15,18 @@ echo "#    Avaliable functions:    #"
 echo "##############################"
 echo "# 1.) gitupdate - Update fork repo"
 echo "# 2.) changeorg - Change chef orgs"
-echo "# 3.) gitstash  - Drop unwanted files"
+echo "# 3.) changekube - Change kube cluster orgs"
+echo "# 4.) gitstash  - Drop unwanted files"
+echo "# 5.) calc      - Calculator"
+echo "# 6.) findme    - Find files based on passed variables"
+echo "# 7.) rerun     - rerun until succesfull"
 echo "##############################"
+}
+
+# Calculator
+calc ()
+{
+bc -l <<< "$@"
 }
 
 # Update forked repo
@@ -23,36 +34,61 @@ function gitupdate {
   local check
   local repo
   local branch_name
+  local branch
+  local new_branch
 
   branch_name=$(git symbolic-ref -q HEAD)
   branch_name=${branch_name##refs/heads/}
   branch_name=${branch_name:-HEAD}
 
-  git status > /dev/null 2>&1
-  if [[ $? != 0 ]]; then
+  if [[ $1 == *".git" ]]; then
+    repo=$1
+  fi
+
+  if [[ $1 == "-D" ]]; then
+    git checkout master
+    git branch -D "${branch_name}"
+    branch_name="master"
+    if [[ -n "$2" ]]; then
+      new_branch=$2
+    fi
+  fi
+
+  if [[ $1 == "current" ]]; then
+    branch=${branch_name}
+  else
+    branch="master"
+  fi
+
+
+  if ! git status > /dev/null 2>&1; then
     echo "Not a git repo!"
     return
   else
     check=$(git remote)
     if [[ $check != *"upstream"* ]]; then
-      echo 'Missing upstream, Whats thy OG-Repo: '
-      read repo
+      if [[ -z "$repo" ]]; then
+        echo 'Missing upstream, Whats thy OG-Repo: '
+        read -r repo
+      fi
       if [[ -z "$repo" ]] || [[ "$repo" != *".git" ]]; then
         echo "Invalid repo provided."
-        return 0
+        return 1
       else
-        git remote add upstream $repo
-        if [[ $? != 0 ]]; then
+        if ! git remote add upstream "${repo}"; then
           echo "Failed to add upstream repo.  Try again."
-          return 0
+          return 1
         fi
       fi
     fi
-    git checkout master
+    git checkout "${branch}"
     git fetch upstream
-    git rebase upstream/master
+    git rebase upstream/"${branch}"
     git push
-    git checkout $branch_name
+    git checkout "${branch_name}"
+    if [[ -n "$new_branch" ]]; then
+      git checkout -b "${new_branch}"
+    fi
   fi
 }
 
@@ -62,42 +98,91 @@ function changeorg {
   local chef
   local check1
   local check2
-  chef="$HOME/.chef"
+  chef="${HOME}/.chef/orgs"
+  rootchef="${HOME}/.chef"
   org=$1
-  if [[ -z $org ]]; then
+  if [[ -z ${org} ]]; then
     echo "You missing and ORG Fool"
     echo "To list all Orgs try: changeorg -l"
     return 0
   fi
 
-  restofcomand="grep -v jp053505.pem | grep -v knife.rb | grep -v syntaxcache"
-  restofcomand="${restofcomand} | grep -v cookbooks | grep -v data_bags"
-  if [[ $org == "-l" ]]; then
-    ls $chef | ${restofcomand}
+  if [[ ${org} == "-l" ]]; then
+    ls "${chef}"
     return 0
   fi
 
   chefdir="$chef/$org"
-  if [ -f "$chefdir/jp053505.pem" ] && [ -f "$chefdir/knife.rb" ]; then
-    cp $chefdir/jp053505.pem $chef
+  if [ -f "${chefdir}/${username}.pem" ] && [ -f "${chefdir}/knife.rb" ]; then
+    cp "${chefdir}/${username}.pem" "${rootchef}"
     check1=$?
-    cp $chefdir/knife.rb $chef
+    cp "${chefdir}/knife.rb" "${rootchef}"
     check2=$?
-    if [[ $check1 == 0 ]] && [[ $check2 == 0 ]]; then
-      echo "ORG Changed to $org"
+    if [[ ${check1} == 0 ]] && [[ ${check2} == 0 ]]; then
+      echo "ORG Changed to ${org}"
     else
-      echo "Failed to change ORG $org"
+      echo "Failed to change ORG ${org}"
     fi
   else
     echo "Fool you never configured the ORG!"
   fi
 }
 
+# Function to change kunectl config via norbert-secrets.
+function changekube {
+  VARS=(cluster rootkube NumCluster ClusterName kube_file grepcommand)
+  for var in ${VARS[@]}
+  do
+    local ${var}
+  done
+
+  norbert="${HOME}/repo/norbert_secrets/kubernetes"
+  rootkube="${HOME}/.kube"
+  cluster=$1
+
+  [ ! -d "${norbert}" ] && { echo "ERROR: Nobert Directory doesn't exist!"; return 1; }
+  [ ! -d "${rootkube}" ] && { echo "ERROR: Kube doesn't exist!"; return 1; }
+
+  if [[ -z ${cluster} ]]; then
+    echo "You missing the KubeCluster Fool"
+    echo "Use: changekube SEARCH SRCH"
+    echo -e "Ex:  changekube open opsdev\n"
+    echo -e "To list all clusters try: changekube -l\n"
+    cluster="-l"
+  fi
+
+  [[ ${cluster} == "-l" ]] && { ls "${norbert}"; return 0; }
+
+  for search in "$@"
+  do
+    [[ -z ${grepcommand} ]] && grepcommand="grep ${search}" || grepcommand="${grepcommand} | grep ${search}"
+  done
+
+  NumCluster=$(eval "ls -1 ${norbert} | ${grepcommand} | wc -l | sed 's/^ *//'")
+  ClusterName=$(eval "ls -1 ${norbert} | ${grepcommand}")
+
+  if [[ ${NumCluster} == 1 ]]; then
+    kube_file="${norbert}/${ClusterName}/kube-config.yaml"
+    [ ! -f "$kube_file" ] && { echo "ERROR: File Doesn't exist: $kube_file"; return 1; }
+    if cp ${kube_file} ${rootkube}/config; then
+      echo "Change config to: ${ClusterName}"
+    else
+      echo "Failed to change config to: ${ClusterName}"
+    fi
+  elif [[ ${NumCluster} > 1 ]]; then
+    echo -e "ERROR: Found ${NumCluster} with name ${cluster} \n"
+    echo -e "Clusters Found: \n${ClusterName}"
+  elif [[ ${NumCluster} == 0 ]]; then
+    echo "ERROR: Fool you never configured the cluster!"
+  else
+    echo "Dum Dum: I have no idea what you broke! SMH!!"
+  fi
+}
+
 # Function to stash and drop changes i dont want
 function gitstash {
   local result
-  git status > /dev/null 2>&1
-  if [[ $? != 0 ]]; then
+  if ! git status > /dev/null 2>&1; then
     echo "Not a git repo! You fool!"
     return
   else
@@ -106,7 +191,7 @@ function gitstash {
     result=$(git stash drop)
     if [[ $? == 0 ]]; then
       echo "Drop Succesfull"
-      echo ${result}
+      echo "${result}"
     else
       echo "Drop Failed"
       echo "Error: ${result}"
@@ -114,30 +199,108 @@ function gitstash {
   fi
 }
 
-# Fetch the latest Repo
-# Get the latest gps-vault
-tim=2
-if [[ -d ${HOME}/.keys/gps-vault ]]; then
-  cd ${HOME}/.keys/gps-vault || return
-  timelimit -S $tim -s $tim -t $tim -T $tim git pull > /dev/null 2>&1
+# Function to find things on bash
+# Usage: findme NAME LOCATION COMMAND
+function findme {
+  if [[ "${1}" = '-h' ]]; then
+    echo "Usage: findme NAME LOCATION COMMAND"
+  elif [[ -n "${1}" ]] && [[ -n "${2}" ]] && [[ -n "${3}" ]]; then
+    search="${3}"
+    dir=$(realpath -sm "${2}")
+    if [[ "${3}" = *"{}"* ]]; then
+      search="${3}"
+    fi
+    echo "Running: ${search}"
+    find "$dir" -name "*$1*" -exec bash -c "${search}" \;
+  elif [[ -n "${1}" ]] && [[ -n "$2" ]]; then
+    dir=$(realpath -sm "${2}")
+    find "$dir" -name "*$1*"
+  elif [[ -n "${1}" ]]; then
+    curdir=$(pwd)
+    find "${curdir}/" -name "*$1*" -exec realpath -sm {} \;
+  else
+    echo "USAGE: findme -h"
+  fi
+}
+
+# Function to repeat a passed command
+# Usage: rerun [-t] COMMAND FLAGS
+function rerun {
+  local RERUN_UNTIL_FAIL
+  if [ $# -eq 0 ]; then
+    echo "You didn't pass any commands! You FOOL!!!"
+    echo ""
+    echo "USAGE: rerun COMMAND"
+    echo "EXAMPLE: To test login to a node. Notice \e[1;32m \` \` \e[0m for aliases!"
+    echo "         \e[1;32mrerun \`baptflnpd1mop101ops 'test -f ~/.bashrc'\`\e[0m"
+    echo "EXAMPLE: To run \e[1;32git pull\e[0m 3 times"
+    echo "         \e[1;32mrerun -t 3 git pull\e[0m"
+    echo ""
+  fi
+
+  # Set's total number of runs before exiting.
+  TOTAL_RUN=1000
+  CURRENT_RUN=1
+
+  # Checks to see if user passed X runs
+  if [[ $1 == "-t" ]]; then
+    TOTAL_RUN=$2
+    shift 2
+  fi
+
+  if [[ $1 == "-r" ]]; then
+    RERUN_UNTIL_FAIL=$2
+    shift 2
+  fi
+
+  if [[ -z ${RERUN_UNTIL_FAIL} ]]; then
+    # Run the actually command, sleeping 1 second in between
+    until "$@" || [[ $CURRENT_RUN -gt $TOTAL_RUN ]] ; do
+      echo "\e[1;31mERROR: \e[1;32mCTRL + C to cancel!\e[0m Run: ${CURRENT_RUN}"
+      CURRENT_RUN=$((CURRENT_RUN+1))
+      sleep 1
+    done
+  else
+    for n in $(seq $RERUN_UNTIL_FAIL); do
+      echo "\e[1;32mINFO: \e[1;31m Run Number ${CURRENT_RUN}:\e[0m $@"
+      $@ || return 1
+      CURRENT_RUN=$((CURRENT_RUN+1))
+      sleep 1
+    done
+  fi
+}
+
+# Only run this ish once every 25th time
+# shellcheck disable=SC2154
+if ((NumberOfLaunches % 25 == 0)); then
+  # Fetch the latest Repo
+  # Get the latest gps-vault
+  tim=2
+  if [[ -d $"{HOME}/.keys/gps-vault" ]]; then
+    cd "${HOME}/.keys/gps-vault" || return
+    timelimit -S $tim -s $tim -t $tim -T $tim git pull > /dev/null 2>&1
+    # Change permission for etsops files
+    find "$keys" -name "etsops*" -exec chmod 600 {} \;
+  fi
+
+  # Get the latest mapping
+  if [[ -d "${HOME}/repo/appliance_mapping" ]]; then
+    cd "${HOME}/repo/appliance_mapping" || return
+    timelimit -S $tim -s $tim -t $tim -T $tim git pull > /dev/null 2>&1
+  fi
+
+  # Backup files:
+  date=$(date)
+  if [[ -d ~/repo/personal-repos/playground/ ]]; then
+    cd ~/repo/personal-repos/playground/ || return
+    rsync -aq ~/.zshrc ~/repo/personal-repos/playground/
+    # rsync -aq ~/Documents/iTerm_logs ~/repo/personal-repos/playground/
+    rsync -aq ~/.function ~/repo/personal-repos/playground/
+    rsync -aq ~/.chef ~/repo/personal-repos/playground/ --exclude ~/.chef/cookbooks
+    git add --all > /dev/null 2>&1
+    git commit -m "Updating files $date" > /dev/null 2>&1
+    timelimit -S $tim -s $tim -t $tim -T $tim git push > /dev/null 2>&1
+  fi
 fi
 
-# Get the latest mapping
-if [[ -d ${HOME}/repo/appliance_mapping ]]; then
-  cd ${HOME}/repo/appliance_mapping || return
-  timelimit -S $tim -s $tim -t $tim -T $tim git pull > /dev/null 2>&1
-fi
-
-# Backup files:
-date=$(date)
-if [[ -d ~/repo/personal-repos/playground/ ]]; then
-  cd ~/repo/personal-repos/playground/
-  cp ~/.zshrc ~/repo/personal-repos/playground/
-  cp ~/.function ~/repo/personal-repos/playground/
-  cp -r ~/.chef ~/repo/personal-repos/playground/
-  git add .zshrc .function .chef > /dev/null 2>&1
-  git commit -m "Updating files $date" > /dev/null 2>&1
-  timelimit -S $tim -s $tim -t $tim -T $tim git push > /dev/null 2>&1
-fi
-
-cd $current || return
+cd "${current}" || return
